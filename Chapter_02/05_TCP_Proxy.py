@@ -5,9 +5,8 @@ Python TCP proxy. Listens, catches, and forwards data to a designated remote add
 import sys
 import socket
 import threading
-import getopt
 from textwrap import dedent
-from typing import List, Tuple, Union, NamedTuple
+from typing import List
 from typing import Union
 import codecs
 from collections import namedtuple
@@ -38,8 +37,9 @@ class Proxy:
         """Remote Host IP to send data on"""
         self.rem_port: int = rem_port
         """Remote Port to send data to"""
-        self.receive_first: bool = receive_first
-        """Indicate if proxy must first request data before entering main loop"""
+        self.receive_banner: bool = receive_first
+        """Indicate if proxy must first request data before entering main loop
+        (Typically banner data, or similar)"""
 
         self.verbose = True
         """Verbosity"""
@@ -58,7 +58,7 @@ class Proxy:
             self.loc_port = int(sys.argv[2])
             self.rem_host = sys.argv[3]
             self.rem_port = int(sys.argv[4])
-            self.receive_first = sys.argv[5] == "True"
+            self.receive_banner = sys.argv[5] == "True"
         except (IndexError, ValueError):
             raise SyntaxError
 
@@ -95,20 +95,20 @@ class Proxy:
 
         while True:
             # Loop broken by explicit error or cmd
-            socket_acceptance = server.accept()
+            client_socket, addr = server.accept()
 
             proxy_thread = threading.Thread(target=self.proxy_handler,
-                                            args=(socket_acceptance, ))
+                                            args=(client_socket, addr))
 
             proxy_thread.start()
 
-    def proxy_handler(self, server_acceptance: Tuple[socket, str]):
+    def proxy_handler(self, client_socket: socket.socket, addr: str):
         """
 
         """
-        client_socket, addr = server_acceptance
         self.verprint(f'--[*] Accepted connection from {addr[0]}:{addr[1]}')
         remote_socket = socket.socket()
+
         # Try connecting to remote address
         try:
             remote_socket.connect((self.rem_host, self.rem_port))
@@ -118,11 +118,124 @@ class Proxy:
                 f"--[x] ! Unexpected error while binding to {self.rem_host}:{self.rem_port} ! ")
             self.verprint(err)
 
-        if self.receive_first:
-            pass
-            # self.hexdump(self.receive_data())
+        # Banner data
 
-    # # # Shared functions
+        if self.receive_banner:
+            self.verprint("[<--] Receiving initial data from remote end")
+            remote_buffer = self.receive_data(from_socket=remote_socket)
+            self.verprint(self.hexdump(remote_buffer).decode())
+
+            remote_buffer = self.response_handler(remote_buffer)
+
+            if len(remote_buffer):
+                print(f"[-->] Sending {len(remote_buffer)} bytes to localhost")
+                self.send_data(to_socket=client_socket, data_stream=remote_buffer)
+
+        # Begin main loop
+        # Read from local, send to remote, repeat
+
+        while True:
+            # broken by explicit errors
+
+            #
+            local_buffer = self.receive_data(from_socket=client_socket)
+
+            if len(local_buffer):
+                self.verprint(f"[<--] Received {len(local_buffer)} bytes from localhost")
+                self.verprint(self.hexdump(local_buffer).decode())
+
+                # handle request
+                local_buffer = self.request_handler(local_buffer)
+
+                self.send_data(to_socket=remote_socket, data_stream=local_buffer)
+                self.verprint("[-->] Sent to remote host")
+
+                remote_buffer = self.receive_data(from_socket=remote_socket)
+                if len(remote_buffer):
+                    self.verprint(f"[<--] Received {len(remote_buffer)} from remote")
+                    self.verprint(self.hexdump(remote_buffer).decode())
+
+                    remote_buffer = self.response_handler(remote_buffer)
+                    self.send_data(to_socket=client_socket, data_stream=remote_buffer)
+
+                    self.verprint("[-->] Sent to localhost")
+
+            if not len(local_buffer) or len(remote_buffer):
+                client_socket.close()
+                remote_socket.close()
+                self.verprint("No more data. Closing")
+                break
+
+
+    # # #
+
+    # # # Shared Functions
+
+    # # #
+
+    def request_handler(self, buffer):
+        """
+        Generic packet request handler and modifier
+        Returns:
+             data stream, intended to be sent to remote host
+        """
+        return buffer
+
+    def response_handler(self, buffer):
+        """
+        Generic packet reponse handler and modifier
+                Returns:
+             data stream, intended to be sent to local host
+        """
+        return buffer
+
+    @staticmethod
+    def send_data(*, to_socket: socket.socket, data_stream: bytes,
+                  send_timeout=2) -> None:
+        """
+        Centralised function to handle sending data stream to receive data. Sends data in consistent
+        buffer sizes
+        Args:
+            to_socket: Socket to send stream to
+            data_stream: Data stream to send
+        """
+        to_socket.settimeout(send_timeout)
+        try:
+            data_fragments = []
+            for i in range(0, len(data_stream), 4096):
+                # Break data stream into byte sized bites
+                data_fragments.append(data_stream[i:i + 4096])
+            if data_fragments[-1] == 4096:
+                # Make sure last fragment isn't BUFFER bytes long
+                data_fragments.append(b'\n')
+            for frag in data_fragments:
+                to_socket.send(frag)
+        except TimeoutError:
+            pass
+
+    @staticmethod
+    def receive_data(*, from_socket: socket.socket,
+                     recv_timeout=2) -> bytes:
+        """
+        Centralised fuction to handle receiving one or more packet buffers from TCP socket
+        Args:
+            from_socket: Socket sending stream to this instance.
+        Returns:
+              Complete binary stream from socket
+        """
+        from_socket.settimeout(recv_timeout)
+        try:
+            stream = from_socket.recv(4096)
+            fragments: List[bytes] = [stream]
+            while True:
+                if len(stream) < 4096:
+                    break
+                else:
+                    stream = from_socket.recv(4096)
+                    fragments.append(stream)
+        except TimeoutError:
+            pass
+        return b''.join(fragments)
 
     @staticmethod
     def deliteral(delit_string: str):
@@ -200,44 +313,6 @@ class Proxy:
         return b'\r\n'.join(results)
 
     @staticmethod
-    def send_data(receiving_socket: socket.socket, data_stream: bytes) -> None:
-        """
-        Centralised function to handle sending data stream to receive data. Sends data in consistent
-        buffer sizes
-        Args:
-            receiving_socket: Socket to send stream to
-            data_stream: Data stream to send
-        """
-        data_fragments = []
-        for i in range(0, len(data_stream), 4096):
-            # Break data stream into byte sized bites
-            data_fragments.append(data_stream[i:i + 4096])
-        if data_fragments[-1] == 4096:
-            # Make sure last fragment isn't BUFFER bytes long
-            data_fragments.append(b'\n')
-        for frag in data_fragments:
-            receiving_socket.send(frag)
-
-    @staticmethod
-    def receive_data(sending_socket: socket.socket) -> bytes:
-        """
-        Centralised fuction to handle receiving one or more packet buffers from TCP socket
-        Args:
-            sending_socket: Socket sending stream to this instance.
-        Returns:
-              Complete binary stream from socket
-        """
-        stream = sending_socket.recv(4096)
-        fragments: List[bytes] = [stream]
-        while True:
-            if len(stream) < 4096:
-                break
-            else:
-                stream = sending_socket.recv(4096)
-                fragments.append(stream)
-        return b''.join(fragments)
-
-    @staticmethod
     def bin_join(*to_join: Union[str, bytes]) -> bytes:
         """
         Funnel function to reliably concatenate binary and strings into binaries. Can also be used
@@ -291,3 +366,7 @@ class Proxy:
 
     def run(self):
         self.server_loop()
+
+if __name__ == '__main__':
+    proxy = Proxy()
+    proxy.run()

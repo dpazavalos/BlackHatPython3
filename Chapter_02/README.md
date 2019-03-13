@@ -21,8 +21,13 @@ exceeds scope and discards single file footprint. It is the author's desire to m
 module 
 
 ##### 05 TCP Proxy
-
+Basic foundation for a TCP proxy
 Rewrote hexdump function to take advantage of 3's codecs libraries.
 Implemented deliteralizer function to ensure string literals are hexdumped, but stdout normally 
-Imported static send/receive data funnel functions from previous module 
+Imported static send/receive data funnel functions from previous module, enforced args 
 (Because constant incremental improvements for life) 
+
+##### 06 SSH With Paramiko
+```
+pip install paramiko
+```
