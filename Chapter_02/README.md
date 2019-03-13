@@ -22,3 +22,7 @@ module
 
 ##### 05 TCP Proxy
 
+Rewrote hexdump function to take advantage of 3's codecs libraries.
+Implemented deliteralizer function to ensure string literals are hexdumped, but stdout normally 
+Imported static send/receive data funnel functions from previous module 
+(Because constant incremental improvements for life) 

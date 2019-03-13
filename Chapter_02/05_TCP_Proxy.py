@@ -8,7 +8,9 @@ import threading
 import getopt
 from textwrap import dedent
 from typing import List, Tuple, Union, NamedTuple
+from typing import Union
 import codecs
+from collections import namedtuple
 
 
 class Proxy:
@@ -121,19 +123,51 @@ class Proxy:
             # self.hexdump(self.receive_data())
 
     # # # Shared functions
+
     @staticmethod
-    def hexdump(to_dump: Union[bytes, str], length=8):
+    def deliteral(delit_string: str):
+        """
+        Function to deliteralize common string literals in a string (aka '\\\\n' to '\\\\\\\\n')
+
+        Args:
+            delit_string:
+                A string to delit
+        Returns:
+             Copy of string given
+        """
+        string_list = list(delit_string)
+        # Mem ID should be consistent across runs, but class and modularlize in future uses
+        Literal = namedtuple('Literal', ['old', 'new'])
+        literals = (
+            Literal('\r', '\\r'),
+            Literal('\t', '\\t'),
+            Literal('\n', '\\n'),
+            Literal('\b', '\\b'),
+            Literal('\a', '\\a'),
+            Literal("\'", "\\'"),
+            Literal('\"', '\\"')
+        )
+        for ndx, char in enumerate(string_list):
+            for lit in literals:
+                if char == lit.old:
+                    string_list[ndx] = lit.new
+        return ''.join(string_list)
+
+    def hexdump(self, to_dump: Union[bytes, str], length=8):
         """
         Given a string or bytestring, create an on screen display of hex values,
         length characters long
         Args:
-            to_dump: String or bytes array to find hex values of
-            length: # of characters to show per line
+            to_dump:
+                String or bytes array to find hex values of
+            length:
+                # of characters to show per line
         Returns:
-            binary string of hex values with their original values, to be printed on screen
+                binary string of hex values with their original values, to be printed on screen
         """
         results = []  # Final output array, to be joined when returning
 
+        # Type acceptance
         if isinstance(to_dump, bytes):
             chars = to_dump.decode()
         elif isinstance(to_dump, str):
@@ -142,19 +176,20 @@ class Proxy:
             raise SyntaxError("Why did you try to hexdump something that's neither str nor bytes")
 
         for i in range(0, len(chars), length):
-            line = []                   # Array to hold this line
+            line = []  # Array to hold this line
             step = chars[i:i + length]  # step through string, length char long
-
-            # Strip any nested returns or newlines. We will use our own
-            step.replace('\r', '')
-            step.replace('\n', '')
 
             # Encode each str char into it's hex value (bytes)
             hex_list = [codecs.encode(char.encode(), 'hex') for char in list(step)]
 
+            # Deliteralize any nested string literals for consistent display
+            # this is done after hexing; in hex '\n' != '\\n'
+            # Replace
+            step = self.deliteral(step)
+
             # Gap final row with any needed blank spaces
             if len(hex_list) < length:
-                for x in range(length-len(hex_list)-1):
+                for x in range(length - len(hex_list) - 1):
                     hex_list.append(b'   ')
 
             # Join line items together, and then into results array
