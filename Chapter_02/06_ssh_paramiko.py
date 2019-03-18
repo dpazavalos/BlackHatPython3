@@ -2,7 +2,8 @@ import threading
 import paramiko
 import subprocess
 import socket
-from typing import List
+from typing import List, Optional
+import getpass
 
 # # #
 
@@ -73,32 +74,51 @@ def receive_data(*, from_socket: socket.socket,
 # # #
 
 
-def ssh_command(ip, user, passwd, command):
+def ssh_command(*,
+                ip: str = None, port: int = None, user: str = None, password: str = None,
+                command: str = None, known_hosts: Optional[str] = None):
     """
-    Non-interactive SSH command client, using paramiko API. Connects to standard SSH port 22
+    Non-interactive SSH command client, using paramiko API. Connects and sends single command to
+    target ssh
 
     Args:
         ip:
-            target IP
+            target IP                       (Def localhost)
+        port:
+            target port                     (Def 22)
         user:
-            Username to pass to target IP
-        passwd:
-            password to pass to target IP
+            Username to pass to target IP   (Def running user)
+        password:
+            password to pass to target IP   (Def '')
         command:
-            One shot command to pass
+            One shot command to pass        (Def ll /)
+        known_hosts:
+            Optional key support, using absolute path to .ssh/known_hosts
     """
+
+    if not ip:
+        ip = 'localhost'
+    if not port:
+        port = 22
+    if not user:
+        user = getpass.getuser()
+    if not password:
+        password = ''
+    if not command:
+        command = 'whoami'
 
     # Bind new SSH client
     client = paramiko.SSHClient()
 
     # Optional key support
-    # client.load_host_keys('/home/user/.ssh/known_hosts')
+    if known_hosts:
+        client.load_host_keys(known_hosts)
 
     # Auto add missing keys
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     # Connect
-    client.connect(ip, username=user, password=passwd)
+    client.connect(ip, port=port, username=user, password=password)
 
     # request a new channel to server, session type
     ssh_session = client.get_transport().open_session()
@@ -106,5 +126,8 @@ def ssh_command(ip, user, passwd, command):
     if ssh_session.active:
         ssh_session.exec_command(command)
         server_response = receive_data(from_socket=ssh_session)
-        print(server_response.decode())
+        # server_response = ssh_session.recv(1024)
+        print(server_response)
 
+
+ssh_command(port=2222, password='toor', command='id')

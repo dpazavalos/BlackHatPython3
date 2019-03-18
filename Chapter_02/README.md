@@ -9,7 +9,7 @@ Simple UDP Socket connect. Minimal change needed, mostly binary strings for sock
 ##### 03 TCP Server
 Simple TCP listener and acceptor. Minimal changs, mostly binary strings for socket
 
-##### 04 TCP Server
+##### 04 Netcat
 Python conversion of NetCat. More or less a complete overhaul in port. Classful conversion, 
 additional options for clarity in file upload/execution, settable timeout, enforced explicit 
 client/listening state flags, custom errors to enable safe client disconnect and remote server 
@@ -31,3 +31,9 @@ Imported static send/receive data funnel functions from previous module, enforce
 ```
 pip install paramiko
 ```
+Basic SSH command sender, using SSHv2 API Paramiko.
+Of note is the reusability of our centralized send/receive data functions implemented in 04 with 
+a paramiko ssh session (from client.get_transport().open_session()).
+
+##### 07 Custom SSH client/server
+Enhanced implementation of 04 Netcat object. 
