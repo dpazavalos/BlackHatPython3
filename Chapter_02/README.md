@@ -1,5 +1,7 @@
 # Chapter 2 The Network
 
+Chapter 2 is mostly an introduction to low level tools, creating pure python client/server tools.
+
 ##### 01 TCP Client
 Simple TCP Socket connect. Minimal change needed, mostly binary strings for socket
 
