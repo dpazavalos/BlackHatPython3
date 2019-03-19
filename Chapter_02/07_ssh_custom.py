@@ -9,6 +9,14 @@ Usage: bhpnet.py -t target_host -p port
 
 -p -port            Target Port (Def : 9999)
 
+--user=uname        username to use (Def : Running user)
+
+--pass=pword        password to sign in with (Def : None)
+
+-b --banner         Banner Mode Enabled. Client listens for a banner, Server sends one
+
+-k=known_hosts      Optional key support, provide absolute path to .ssh/known_hosts
+
 -c --connect        Run as a connecting client, to send commands or files to a listening server
 
 -i --initial=cmd    (Connecting) Connect and send cmd without interaction. Note that a listening
@@ -59,42 +67,60 @@ class Helpers:
     """Static functions, to use as helpers"""
 
     @staticmethod
-    def send_data(receiving_socket: socket.socket, data_stream: bytes) -> None:
+    def send_data(to_socket: socket.socket, data_stream: bytes,
+                  send_timeout=2) -> None:
         """
         Centralised function to handle sending data stream to receive data. Sends data in consistent
         buffer sizes
-        Args:
-            receiving_socket: Socket to send stream to
-            data_stream: Data stream to send
-        """
 
-        data_fragments = []
-        for i in range(0, len(data_stream), 4096):
-            # Break data stream into byte sized bites
-            data_fragments.append(data_stream[i:i + 4096])
-        if data_fragments[-1] == 4096:
-            # Make sure last fragment isn't BUFFER bytes long
-            data_fragments.append(b'\n')
-        for frag in data_fragments:
-            receiving_socket.send(frag)
+        Args:
+            to_socket:
+                Socket to send stream to
+            data_stream:
+                Data stream to send
+            send_timeout:
+                Set timeout for to_socket
+        """
+        to_socket.settimeout(send_timeout)
+        try:
+            data_fragments = []
+            for i in range(0, len(data_stream), 4096):
+                # Break data stream into byte sized bites
+                data_fragments.append(data_stream[i:i + 4096])
+            if data_fragments[-1] == 4096:
+                # Make sure last fragment isn't BUFFER bytes long
+                data_fragments.append(b'\n')
+            for frag in data_fragments:
+                to_socket.send(frag)
+        except TimeoutError:
+            pass
 
     @staticmethod
-    def receive_data(sending_socket: socket.socket) -> bytes:
+    def receive_data(from_socket: socket.socket,
+                     from_timeout=2) -> bytes:
         """
         Centralised fuction to handle receiving one or more packet buffers from TCP socket
         Args:
-            sending_socket: Socket sending stream to this instance.
+            from_socket:
+                Socket sending stream to this instance.
+            from_timeout:
+                Set timeout for from_socket
         Returns:
-              Complete binary stream from socket
+                Complete binary stream from socket
         """
-        stream = sending_socket.recv(4096)
-        fragments: List[bytes] = [stream]
-        while True:
-            if len(stream) < 4096:
-                break
-            else:
-                stream = sending_socket.recv(4096)
-                fragments.append(stream)
+        from_socket.settimeout(from_timeout)
+        fragments: List[bytes] = []
+        try:
+            stream = from_socket.recv(4096)
+            fragments.append(stream)
+            while True:
+                if len(stream) < 4096:
+                    break
+                else:
+                    stream = from_socket.recv(4096)
+                    fragments.append(stream)
+        except TimeoutError:
+            pass
         return b''.join(fragments)
 
     @staticmethod
@@ -126,10 +152,10 @@ class Helpers:
         Funnel function to reliably print binary or regular strings.
 
         Args:
-            to_display: Item/s to join together. Either bytes or regular strings
-
-            end: default print end arg
-
+            to_display:
+                Item/s to join together. Either bytes or regular strings
+            end:
+                default print end arg
         """
         for item in to_display:
             try:
@@ -153,8 +179,8 @@ class SshcAttributes:
             self.usage()
 
         try:
-            opts, args = getopt.getopt(sys.argv[1:], "ht:p:ci:u:lw:e:sv",
-                                       ['help', 'target=', 'port=',
+            opts, args = getopt.getopt(sys.argv[1:], "ht:p:k:bci:u:lw:e:sv",
+                                       ['help', 'target=', 'port=', 'user=', 'pass=', 'banner'
                                         'connect', 'initial=', 'upload=',
                                         'listen', 'write=', 'execute=', 'shell', 'verbose'])
             for opt, arg in opts:
@@ -167,11 +193,27 @@ class SshcAttributes:
 
                 elif opt in ('-p', '--port'):
                     # self.port = arg
-                    self.__setattr__('port', arg)
+                    self.__setattr__('port', int(arg))
 
                 elif opt in ('-c', '--connecting'):
                     # self.connecting = True
                     self.__setattr__('connecting', True)
+
+                elif opt == 'k':
+                    # self.known_hosts = arg
+                    self.__setattr__('known_hosts', arg)
+
+                elif opt == 'user':
+                    # self.user = arg
+                    self.__setattr__('user', arg)
+
+                elif opt in ('b', '--banner'):
+                    # self.banner = True
+                    self.__setattr__('banner', True)
+
+                elif opt == 'pass':
+                    # self.password = arg
+                    self.__setattr__('password', arg)
 
                 elif opt in ('-u', '--upload'):
                     # self.upload = arg
@@ -213,15 +255,23 @@ class SshcAttributes:
 
     target: str = '127.0.0.1'
     """Target IP"""
-    port: str = 2222
+    port: int = 2222
     """Target port"""
+    known_hosts = ''
+    """Optional key support, using absolute path to .ssh/known_hosts"""
+    user: str = getpass.getuser()
+    """Username to pass to custom server"""
+    password: str = None
+    """password to sign in with"""
+    banner: bool = False
+    """Banner Mode Enabled. Client listens for a banner, Server sends one"""
 
     # Connecting functions
     connecting: bool = False
     """Bool to connect to listening server on [host]:[port]"""
     upload: str = ''
     """File to upload to listening server"""
-    initial_cmd: str = 'ClientConnected'
+    initial_cmd: str = 'whoami'
     """Start up command to send on initial connect"""
 
     # Listening functions
@@ -274,9 +324,42 @@ class SSHCustom:
         self.help = Helpers()
         """Helper static functions"""
 
-    # # # Listening functions
+    # # # Connection Functions
 
-    def listening_server(self):
+    def verprint(self, *to_print) -> None:
+        """
+        Default check against verbosity attribute, to see if allowed to print
+
+        Args:
+            *to_print: emulation of print *args. pass as normal
+        """
+        if self.atts.verbose:
+            for item in to_print:
+                self.help.bin_print(item, end=' ')
+            print()
+
+    def main(self):
+        """
+        Primary logic loop. After init, builds listening post or starts connecting client
+        """
+
+        if self.atts.listening:
+            # Time to listen, potentially upload items, execute commands, and drop a shell back
+            child = SSHServer()
+            child.server()
+            # self.listening_server()
+
+        else:
+            # Try connecting to target, send a potential starting command
+            child = SSHClient()
+
+            self.connecting_client()
+
+
+class SSHServer(SSHCustom):
+    """Custom SSH client, using paramiko API wrapper"""
+
+    def server(self):
         """
         Start a TCP server socket, spool threads to handle incoming clients
         """
@@ -291,13 +374,13 @@ class SSHCustom:
         while self.atts.listening_active:
             server_acceptance = server.accept()  # Tuple containing client_socket and addr
             if self.atts.listening_active:
-                client_thread = threading.Thread(target=self.listening_handle_connects,
+                client_thread = threading.Thread(target=self.handle_connects,
                                                  args=(server_acceptance,))
                 client_thread.start()
 
-    def listening_handle_connects(self, connected_client: Tuple[socket.socket, any]):
+    def handle_connects(self, connected_client: Tuple[socket.socket, any]):
         """
-        Called by server socket in listening_server for each connection.
+        Called by server socket in server for each connection.
         File upload, command execution, and/or interactive shell through given client socket
 
         Args:
@@ -320,7 +403,7 @@ class SSHCustom:
                 response = self.help.bin_join(self.run_command(buffer_stream), response)
             elif self.atts.write_to:
                 # Or write stream to file instead
-                response = self.help.bin_join(self.listening_write_file(buffer_stream), response)
+                response = self.help.bin_join(self.write_file(buffer_stream), response)
 
             if self.atts.execute:
                 # Try to execute a given file
@@ -328,11 +411,12 @@ class SSHCustom:
 
             if not self.atts.shell:
                 # Listener not set to init shell. Send response and close
-                self.help.send_data(client_socket, self.help.bin_join(
-                    response, f"\nClosing connection to {self.atts.target}:{self.atts.port}"))
+                response = self.help.bin_join(
+                    response, f"\nClosing connection to {self.atts.target}:{self.atts.port}")
+                self.help.send_data(to_socket=client_socket, data_stream=response)
             else:
                 # Initiate shell
-                self.listening_shell_loop(client_socket, response)
+                self.shell_loop(client_socket, response)
 
         except CloseConnection:
             closing = dedent(f"""
@@ -354,14 +438,15 @@ class SSHCustom:
             self.verprint(closing)
             # Low effort try to send to connected client
             try:
-                self.help.send_data(client_socket, self.help.bin_join(closing))
+                self.help.send_data(to_socket=client_socket,
+                                    data_stream=self.help.bin_join(closing))
                 client_socket.shutdown(socket.SHUT_RDWR)
                 client_socket.close()
             except Exception as err:
                 self.verprint(f"Unexpected error while closing handler {addr[0]}:{addr[1]} : ")
                 self.verprint(err)
 
-    def listening_check_for_commands(self, stream: bytes):
+    def check_for_commands(self, stream: bytes):
         """
         Given a datastream, check if a closing command is in it. Raise appropriate handling error
 
@@ -375,13 +460,13 @@ class SSHCustom:
         if self.atts.shutdown_listening in str(stream):
             raise ShutdownListen
 
-    def listening_write_file(self, data_buffer) -> bytes:
+    def write_file(self, data_buffer) -> bytes:
         """
         If allowed, Extension to write a caught data_buffer to local file (self.write_to)
         Return feedback to calling functions
 
         Args:
-            data_buffer: listening_handle_connects's received data stream from it's client_socket.
+            data_buffer: handle_connects's received data stream from it's client_socket.
         Returns:
             File write feedback, either successful or failure with error
                 if write_to is None (i.e. not set) return empty bytes string
@@ -423,13 +508,13 @@ class SSHCustom:
 
         return self.help.bin_join(output)
 
-    def listening_shell_loop(self, client_socket: socket.socket, initial_response: bytes):
+    def shell_loop(self, client_socket: socket.socket, initial_response: bytes):
         """
         Function to handle one off commands from connecting client. Loops until connection broken.
 
         Args:
             client_socket: Answered socket to accept shell commands from
-            initial_response: Initial response from listening_handle_connects' steps, if any.
+            initial_response: Initial response from handle_connects' steps, if any.
                 Passed here so shell loop can return, with prompt characters
         """
 
@@ -438,56 +523,79 @@ class SSHCustom:
 
         while True:
             # Loop is broken by explicit errors or commands
-            self.help.send_data(client_socket, self.help.bin_join(response, prompt))
+            self.help.send_data(to_socket=client_socket,
+                                data_stream=self.help.bin_join(response, prompt))
             try:
-                cmd_buffer = self.help.receive_data(client_socket)
-                self.listening_check_for_commands(cmd_buffer)
+                cmd_buffer = self.help.receive_data(from_socket=client_socket)
+                self.check_for_commands(cmd_buffer)
                 response = self.run_command(cmd_buffer)
             except TimeoutError:
                 raise TimeoutError("Listening server timeout reached")
             except Exception as err:
                 raise err
 
-    # # # Connection Functions
+
+class SSHClient(SSHCustom):
+    """Custom SSH Client, , using paramiko API wrapper"""
 
     def connecting_client(self):
         """
         Spool up TCP socket, catch return data, prompt for new to_send. Rinse and repeat
-
         """
-        # Create client socket, using IPv4 and TCP socket type
-        client = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
+
+        self.verprint(f"Connecting to {self.atts.target}:{self.atts.port}...")
+
+        # Bind new SSH client
+        client = paramiko.SSHClient()
         try:
-            self.verprint(f"Connecting to {self.atts.target}:{self.atts.port}")
-            client.connect((self.atts.target, self.atts.port))
+            # Optional key support
+            if self.atts.known_hosts:
+                client.load_host_keys(self.atts.known_hosts)
 
-            to_send = b''
-            if self.atts.initial_cmd:
-                to_send = self.help.bin_join(self.atts.initial_cmd)
-            elif self.atts.upload:
-                to_send = self.help.bin_join(self.connecting_file_stream())
+            # Auto add missing keys
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+            # Connect
+            client.connect(self.atts.target, port=self.atts.port,
+                           username=self.atts.user, password=self.atts.password)
+
+            # request session channel to server
+            ssh_session = client.get_transport().open_session()
+
+            # Catch banner
+            if self.atts.banner:
+                banner = self.help.receive_data(ssh_session)
+                self.help.bin_print(banner)
+
+            # Build initial data to send
+            if self.atts.upload:
+                to_send = self.connecting_file_stream()
+            else:
+                to_send = self.help.bin_join(self.atts.initial_cmd, '\n')
+
+            # Primary running loop
             while True:
-                # Loop broken by error or explicit command
-                self.help.send_data(client, self.help.bin_join(to_send, '\n'))
-                response = self.help.receive_data(client)
-                self.help.bin_print('\n', response, end=' ')  # ' ' after shell-sent prompt characters
+                self.help.send_data(ssh_session, to_send)
+                server_response = self.help.receive_data(ssh_session)
+                self.help.bin_print('\n', server_response, end=' ')
                 to_send = input() + '\n'
 
-        except KeyboardInterrupt as err:
-            input(dedent(
-                f"""{err}
-                Press any key to close..."""))
+        except KeyboardInterrupt:
+            self.verprint("Disconnecting")
+            pass
         except ConnectionRefusedError:
-            self.verprint('\nCannot connect, is listening active?')
+            self.verprint('Cannot connect, is listening active?')
         except ConnectionAbortedError:
             # Socket closed by listener
-            pass
+            self.verprint("Closing connection...")
         except ConnectionResetError:
-            self.verprint("Connection prematurely closed. Did listening shutdown?")
+            self.verprint("Connection prematurely closed. Did server shutdown?")
+        except Exception as err:
+            self.verprint("Unknown error!\n", err, "\nDisconnecting")
         finally:
             try:
-                client.shutdown(socket.SHUT_RDWR)
+                # client.shutdown(socket.SHUT_RDWR)
+                # ssh_session.close()
                 client.close()
             except Exception as err:
                 self.verprint(
@@ -496,8 +604,8 @@ class SSHCustom:
 
     def connecting_file_stream(self):
         """
-        Targets file at self.atts.upload and converts to binary stream, to send to listening server
-    
+        Targets file at upload and converts to binary stream, to send to listening server
+
         Returns:
                 Single binary stream of indicated file
         """
@@ -506,31 +614,6 @@ class SSHCustom:
             for ndx, line in enumerate(file):
                 file_stream = self.help.bin_join(file_stream, line)
         return file_stream + b'\r\n'
-
-    def verprint(self, *to_print) -> None:
-        """
-        Default check against verbosity attribute, to see if allowed to print
-
-        Args:
-            *to_print: emulation of print *args. pass as normal
-        """
-        if self.atts.verbose:
-            for item in to_print:
-                self.help.bin_print(item, end=' ')
-            print()
-
-    def main(self):
-        """
-        Primary logic loop. After init, builds listening post or starts connecting client
-        """
-
-        if self.atts.listening:
-            # Time to listen, potentially upload items, execute commands, and drop a shell back
-            self.listening_server()
-
-        else:
-            # Try connecting to target, send a potential starting command
-            self.connecting_client()
 
 
 if __name__ == '__main__':

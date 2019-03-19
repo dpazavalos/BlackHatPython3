@@ -216,7 +216,7 @@ class NC:
 
     def listening_handle_connects(self, connected_client: Tuple[socket.socket, any]):
         """
-        Called by server socket in listening_server for each connection.
+        Called by server socket in server for each connection.
         File upload, command execution, and/or interactive shell through given client socket
 
         Args:
@@ -300,7 +300,7 @@ class NC:
         Return feedback to calling functions
 
         Args:
-            data_buffer: listening_handle_connects's received data stream from it's client_socket.
+            data_buffer: handle_connects's received data stream from it's client_socket.
         Returns:
             File write feedback, either successful or failure with error
                 if write_to is None (i.e. not set) return empty bytes string
@@ -348,7 +348,7 @@ class NC:
 
         Args:
             client_socket: Answered socket to accept shell commands from
-            initial_response: Initial response from listening_handle_connects' steps, if any.
+            initial_response: Initial response from handle_connects' steps, if any.
                 Passed here so shell loop can return, with prompt characters
         """
 
