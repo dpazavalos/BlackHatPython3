@@ -1,5 +1,5 @@
 """
-Limited python implementation of SSHv2 API Paramiko, for a self standing SSH client/server setup
+* Limited python implementation of SSHv2 API Paramiko, for a self standing SSH client/server setup *
 
 Usage: bhpnet.py -t target_host -p port
 
@@ -357,8 +357,14 @@ class SSHServer(SSHCustom, paramiko.ServerInterface):
 
     def __init__(self):
         super(SSHServer, self).__init__()
+
         # Extension to super init, name spacing an Event
         self.event = threading.Event()
+
+        self.rsa_key = paramiko.RSAKey(filename='07_test_rsa.key')
+        """Server RSA Key"""
+
+        self.welcome_banner = b'A python SSH Server'
 
     def check_channel_request(self, kind, chanid):
         # ServInt override, enable simple check channel request
@@ -379,7 +385,7 @@ class SSHServer(SSHCustom, paramiko.ServerInterface):
 
         self.verprint(f"[*] Listening on {self.atts.target}:{self.atts.port}")
         try:
-            # Spool SSH server
+            # Spool main SSH server
             server = socket.socket()
 
             # Bind socket settings
@@ -400,23 +406,26 @@ class SSHServer(SSHCustom, paramiko.ServerInterface):
             closing = dedent(f"""
                 --[*] Unexpected error: {err}
                 ----- Closing server""")
+            self.verprint(closing)
 
     def handle_connects(self, connected_client: Tuple[socket.socket, any]):
-        """
-        Called by server socket for each connection.
-        File upload, command execution, and/or interactive shell through given client socket
 
-        Args:
-            connected_client: Answered socket and address from server.accept()
-        """
+        # Identify target TCP connection
         client_socket, addr = connected_client
         client_socket.settimeout(self.atts.timeout)
-        closing = b''
+        self.verprint(f'--[*] Accepted connection, handler spooled for {addr[0]}:{addr[1]}')
 
         try:
+            # Create SSH transport object over client_socket
+            ssh_session = paramiko.Transport(client_socket)
+            ssh_session.add_server_key(self.rsa_key)
+            ssh_session.start_server()
+            ssh_channel = ssh_session.accept(20)
 
-            self.verprint(f'--[*] Accepted connection, handler spooled for {addr[0]}:{addr[1]}')
-            buffer_stream = self.help.receive_data(client_socket)
+            if self.atts.banner:
+                self.help.send_data(ssh_channel, self.welcome_banner)
+
+            buffer_stream = self.help.receive_data(ssh_channel)
             """Received buffer stream from connecting client"""
             response = b''
             """First response to send to connecting client"""
@@ -436,9 +445,17 @@ class SSHServer(SSHCustom, paramiko.ServerInterface):
             if not self.atts.shell:
                 response = self.help.bin_join(
                     response, f"\nClosing connection to {self.atts.target}:{self.atts.port}")
-                self.help.send_data(to_socket=client_socket, data_stream=response)
+                self.help.send_data(to_socket=ssh_channel, data_stream=response)
             else:
-                self.shell_loop(client_socket, response)
+                self.shell_loop(ssh_channel, response)
+
+        # # # Exception Handling
+
+        except paramiko.SSHException:
+            closing = dedent(f"""
+            --[*] Unable to to negotiate SSH connection
+            ----- Closing handler {addr[0]}:{addr[1]}
+            """)
 
         except ShutdownClient:
             closing = dedent(f"""
@@ -461,10 +478,11 @@ class SSHServer(SSHCustom, paramiko.ServerInterface):
             self.verprint(closing)
             # Low effort try to send to connected client
             try:
-                self.help.send_data(to_socket=client_socket,
+                self.help.send_data(to_socket=ssh_channel,
                                     data_stream=self.help.bin_join(closing))
-                client_socket.shutdown(socket.SHUT_RDWR)
-                client_socket.close()
+                # client_socket.shutdown(socket.SHUT_RDWR)
+                # client_socket.close()
+                ssh_channel.close()
             except Exception as err:
                 self.verprint(f"Unexpected error while closing handler {addr[0]}:{addr[1]} : ")
                 self.verprint(err)
@@ -602,6 +620,8 @@ class SSHClient(SSHCustom):
                 server_response = self.help.receive_data(ssh_session)
                 self.help.bin_print('\n', server_response, end=' ')
                 to_send = input() + '\n'
+
+        # # # Exception Handling
 
         except KeyboardInterrupt:
             self.verprint("Disconnecting")
