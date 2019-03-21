@@ -7,3 +7,6 @@ degree comes in handy as heck here)
 Simple one-off packet sniffer. No modifications needed to convert to python3. 
 
 ##### 02 UDP sniffer, with IP decoder
+Packet sniffer with IP header decoder. Successful implementation of ctypes.Structure with minimal
+conversion needed. 
+
