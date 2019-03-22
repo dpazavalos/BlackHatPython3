@@ -34,7 +34,7 @@ class IP(ctypes.Structure):
 
         try:
             self.protocol = self.protocol_map[self.protocol_num]
-        except:
+        except KeyError:
             self.protocol = str(self.protocol_num)
 
 
