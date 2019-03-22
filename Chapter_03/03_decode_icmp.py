@@ -51,7 +51,7 @@ class ICMP(ctypes.Structure):
     def __new__(self, socket_buffer=None):
         """Form a given bytes string, copy against stored buffer fields to create our ICMP object"""
         # A given socket buffer arrives as a tuple. Extract bytes obj from [0]
-        return self.from_buffer_copy(socket_buffer[0])
+        return self.from_buffer_copy(socket_buffer)
 
     def __init__(self, socket_buffer):
         pass
@@ -89,7 +89,7 @@ class ICMP_Decoder():
     def get_my_ip():
         """
         Quick socket build and destroy, to try and dig up a running IP. Tries to connect to google
-        dns, and gets socket's IP from name
+        dns, and gets socket's IP from socket name
 
         Returns:
                 Socket gathered IP
@@ -132,17 +132,12 @@ class ICMP_Decoder():
             print(f"    {ip_header.src_address} -> {ip_header.dst_address}")
 
             if ip_header.protocol == 'ICMP':
-                # Header offset
+                # Find Header offset, to gather only data contents
                 offset = ip_header.ihl * 4
-                # From offset to end of packet
-                # todo this sizeof did not work. Maybe __sizeof__? Try when connected
-                message = raw_buffer[offset:offset + ctypes.Structure.sizeof(ICMP)]
-                message = raw_buffer[offset:offset + ICMP.__sizeof__()]
-                # message = raw_buffer[offset:offset + len(ICMP)]
-                # ICMP Class
+                message = raw_buffer[0][offset:offset + ctypes.sizeof(ICMP)]
                 icmp_header = ICMP(message)
 
-                print(f"    {icmp_header.type} {icmp_header.code}")
+                print(f"    Type: {icmp_header.type}  Code: {icmp_header.code}")
 
     def bind_sniffer(self):
         """Bind sniffer to host, set opt to include headers"""
@@ -166,5 +161,5 @@ class ICMP_Decoder():
             self.sniffer.ioctl(socket.SIO_RCVALL, socket.RCVALL_OFF)
 
 
-sniffer = ICMP_Decoder('localhost')
+sniffer = ICMP_Decoder()
 sniffer.run()
