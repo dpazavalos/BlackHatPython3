@@ -10,3 +10,7 @@ Simple one-off packet sniffer. No modifications needed to convert to python3.
 Packet sniffer with IP header decoder. Successful implementation of ctypes.Structure with minimal
 conversion needed. Added SSDP recognition
  
+##### 03 ICMP Decoder
+Incorporated ICMP header decoder, minor tweaks in ctypes.structures calling. 
+To strengthen this port a classful conversion was implemented. Additionally, enabled a self
+-detecting IP function to further utility and simplicity 
