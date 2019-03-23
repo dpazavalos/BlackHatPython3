@@ -11,6 +11,10 @@ Packet sniffer with IP header decoder. Successful implementation of ctypes.Struc
 conversion needed. Added SSDP recognition
  
 ##### 03 ICMP Decoder
+```
+pip install netaddr
+```
 Incorporated ICMP header decoder, minor tweaks in ctypes.structures calling. 
-To strengthen this port a classful conversion was implemented. Additionally, enabled a self
--detecting IP function to further utility and simplicity 
+To strengthen this port a few classful conversions were implemented; UDP sprayer is now standalone.
+Additionally, enabled a self-detecting IP function to further utility and simplicity was implemented
+in the primary logic. 

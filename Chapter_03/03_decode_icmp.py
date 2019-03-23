@@ -2,9 +2,14 @@ import socket
 import os
 import struct
 import ctypes
+import time
+import netaddr
+import threading
 
 
-# IP header decoder, in C type
+#
+# # # IP header decoder, in C type
+#
 class IP(ctypes.Structure):
     _fields_ = [
         ("ihl",             ctypes.c_ubyte, 4),
@@ -38,7 +43,9 @@ class IP(ctypes.Structure):
             self.protocol = str(self.protocol_num)
 
 
-# ICMP header decode, in C Types
+#
+# # # ICMP header decode, in C Types
+#
 class ICMP(ctypes.Structure):
     _fields_ = [
         ("type",            ctypes.c_ubyte),
@@ -57,11 +64,15 @@ class ICMP(ctypes.Structure):
         pass
 
 
-class ICMP_Decoder():
+#
+# # # ICMP Decoder
+#
+class ICMPDecoder:
     """Simple sniffer with ICMP header decoder, intended to decypher dropped or refuced pings"""
 
-    def __init__(self, listen_from: str=None):
+    def __init__(self, listen_from: str = None,):
         """
+        Simple sniffer with ICMP header decoder, intended to decypher dropped or refuced pings
 
 
         Args:
@@ -70,7 +81,7 @@ class ICMP_Decoder():
         """
 
         if not listen_from:
-            listen_from = self.get_my_ip()
+            listen_from = self._get_my_ip()
         self.host = listen_from
 
         self.windows_based = os.name == 'nt'
@@ -86,7 +97,7 @@ class ICMP_Decoder():
                                      proto=self.socket_protocol)
 
     @staticmethod
-    def get_my_ip():
+    def _get_my_ip():
         """
         Quick socket build and destroy, to try and dig up a running IP. Tries to connect to google
         dns, and gets socket's IP from socket name
@@ -103,42 +114,6 @@ class ICMP_Decoder():
         except OSError:
             raise OSError("Unable to determine running IP. Is this device connected?\n")
 
-    def run(self):
-
-        self.bind_sniffer()
-        self.win_promisc_start()
-
-        try:
-            self.capture()
-        except Exception as err:
-            print(err)
-        finally:
-            self.win_promisc_end()
-
-    def capture(self):
-        """
-        Contains the guts of our ping decoder. Captures packets, decyphers ICMP headers, displays
-        ICMP message
-        """
-
-        while True:
-            # Capture packet
-            raw_buffer = self.sniffer.recvfrom(65565)
-            # Extract IP header
-            ip_header = IP(raw_buffer[:20])
-
-            # Print detected protocol
-            print(f"Protocol: {ip_header.protocol}")
-            print(f"    {ip_header.src_address} -> {ip_header.dst_address}")
-
-            if ip_header.protocol == 'ICMP':
-                # Find Header offset, to gather only data contents
-                offset = ip_header.ihl * 4
-                message = raw_buffer[0][offset:offset + ctypes.sizeof(ICMP)]
-                icmp_header = ICMP(message)
-
-                print(f"    Type: {icmp_header.type}  Code: {icmp_header.code}")
-
     def bind_sniffer(self):
         """Bind sniffer to host, set opt to include headers"""
         self.sniffer.bind((self.host, 0))
@@ -152,6 +127,42 @@ class ICMP_Decoder():
         if self.windows_based:
             self.sniffer.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
 
+    def capture(self):
+        """
+        Contains the guts of our ping decoder. Captures packets, decyphers ICMP headers, displays
+        ICMP message
+        """
+        # Use a set to track unique finds
+        host_up_set = set()
+
+        while True:
+            # Capture packet
+            raw_buffer = self.sniffer.recvfrom(65565)
+            # Extract IP header
+            ip_header = IP(raw_buffer[:20])
+
+            # Print detected protocol
+            print_all = False
+            if print_all:
+                pass
+                print(f"Protocol: {ip_header.protocol}")
+                print(f"    {ip_header.src_address} -> {ip_header.dst_address}")
+
+            if ip_header.protocol == 'ICMP':
+                # Find Header offset, to gather only data contents
+                offset = ip_header.ihl * 4
+                message = raw_buffer[0][offset:offset + ctypes.sizeof(ICMP)]
+                icmp_header = ICMP(message)
+
+                if print_all:
+                    print(f"    Type: {icmp_header.type}  Code: {icmp_header.code}")
+
+                if icmp_header.type == icmp_header.code == 3:
+                    host_up = f'    Host up: {ip_header.src_address}'
+                    if host_up not in host_up_set:
+                        print(host_up)
+                        host_up_set.add(host_up)
+
     def win_promisc_end(self):
         """
         Windows is less discerning on packets, but promiscuity must be manually triggered
@@ -160,6 +171,84 @@ class ICMP_Decoder():
         if self.windows_based:
             self.sniffer.ioctl(socket.SIO_RCVALL, socket.RCVALL_OFF)
 
+    def spray_udp_packets(self):
+        """
+        Call, build, and start a threaded UDP subnet sprayer. Sends out a simple UDP message to a
+        wide variety of subnets. These subnets will respond in ICMP requests, which our sniffer
+        listens for
+        """
+        sprayer = UDPSprayer()
+        sprayer.run()
+        print('spraying...')
 
-sniffer = ICMP_Decoder()
+    def run(self):
+        """
+        Primary logic. Binds sniffer, handles windows promiscuity mode (if applicable), calls a
+        UDP sprayer, and listens for ICMP pings
+        """
+
+        self.bind_sniffer()
+
+        self.win_promisc_start()
+
+        self.spray_udp_packets()
+
+        try:
+            self.capture()
+        except Exception as err:
+            print(err)
+        finally:
+            self.win_promisc_end()
+
+
+class UDPSprayer:
+    """
+    UDP sprayer object. Tries to connect to every IP in a subnet. Builds a simple socket, threads
+    and tries to connect to all ip addresses in a given subnet
+    """
+
+    def __init__(self, subnet: str = None, spray_msg: bytes = None):
+        """
+        Args:
+            subnet:
+                subnet to try to connect to, use a netaddr usable string. Default 192.168.0.0/16
+            spray_msg:
+                Simple message to use when connecting. Can be specified, so responses can be
+                precisely caught. Default
+        """
+
+        if not subnet:
+            subnet = '192.168.0.0/16'
+        self.subnet = subnet
+
+        # message for UDP sprayer
+        if not spray_msg:
+            spray_msg = b"Don't mind me..."
+        elif isinstance(spray_msg, str):
+            spray_msg = spray_msg.encode()
+        self.spray_msg = spray_msg
+
+    def run(self):
+        """
+        Creates and starts a thread to spray UDPs in every indicated subnet. Sprayer includes a
+        5 second delay, to allow listening a chance to begin
+        """
+        # print('Spraying')
+        sprayer = threading.Thread(target=self._udp_sprayer)
+        sprayer.start()
+
+    def _udp_sprayer(self):
+        """Actual UDP socket sprayer"""
+
+        time.sleep(5)
+        sender = socket.socket(type=socket.SOCK_DGRAM)
+
+        for ip in netaddr.IPNetwork(self.subnet):
+            try:
+                sender.sendto(self.spray_msg, (str(ip), 65212))
+            except Exception as err:
+                print(err)
+
+
+sniffer = ICMPDecoder()
 sniffer.run()
