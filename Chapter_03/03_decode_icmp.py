@@ -11,6 +11,9 @@ import threading
 # # # IP header decoder, in C type
 #
 class IP(ctypes.Structure):
+    """C types interface, to decode ip header to parsable object. Returns object with attributes
+    for each header field"""
+
     _fields_ = [
         ("ihl",             ctypes.c_ubyte, 4),
         ("version",         ctypes.c_ubyte, 4),
@@ -47,6 +50,9 @@ class IP(ctypes.Structure):
 # # # ICMP header decode, in C Types
 #
 class ICMP(ctypes.Structure):
+    """C types interface, to decode icmp header to parsable object. Returns object with attributes
+    for each header field"""
+
     _fields_ = [
         ("type",            ctypes.c_ubyte),
         ("code",            ctypes.c_ubyte),
@@ -129,7 +135,7 @@ class ICMPDecoder:
 
     def capture(self):
         """
-        Contains the guts of our ping decoder. Captures packets, decyphers ICMP headers, displays
+        Contains the guts of our ping decoder. Captures packets, deciphers ICMP headers, displays
         ICMP message
         """
         # Use a set to track unique finds
